@@ -16,6 +16,7 @@ class LinfBallFactory(object):
     """ Class to easily generate l_inf balls with fixed radius and global bounds
         (but no center)
     """
+
     def __init__(self, dimension, radius, global_lo=None, global_hi=None):
         self.dimension = dimension
         self.radius = radius
@@ -23,10 +24,9 @@ class LinfBallFactory(object):
         self.global_hi = global_hi
 
     def __call__(self, center):
-        return Hyperbox.build_linf_ball(center, self.radius, 
+        return Hyperbox.build_linf_ball(center, self.radius,
                                         global_lo=self.global_lo,
                                         global_hi=self.global_hi)
-
 
 
 class Hyperbox(Domain):
@@ -37,11 +37,12 @@ class Hyperbox(Domain):
         self.center = None
         self.radius = None
 
-        self.box_low = None # ARRAY!
-        self.box_hi = None # ARRAY!
+        self.box_low = None  # ARRAY!
+        self.box_hi = None  # ARRAY!
 
         self.is_vector = False
-        self.shape = None # for conv layers is (C, h, w)
+        self.shape = None  # for conv layers is (C, h, w)
+        self.device = torch.device("cpu")
 
     def __iter__(self):
         """ Iterates over twocol version of [box_low, box_high] """
@@ -51,16 +52,15 @@ class Hyperbox(Domain):
     def __getitem__(self, idx):
         return (self.box_low[idx], self.box_hi[idx])
 
-    # CONSTRUCTOR OVERVIEW: 
+    # CONSTRUCTOR OVERVIEW:
     def as_dict(self):
-        return {'dimension':                self.dimension,
-                'center':                   self.center,
-                'radius':                   self.radius,
-                'box_low':                  self.box_low,
-                'box_hi':                   self.box_hi,
-                'is_vector':                self.is_vector,
-                'shape':                    self.shape}
-
+        return {'dimension': self.dimension,
+                'center': self.center,
+                'radius': self.radius,
+                'box_low': self.box_low,
+                'box_hi': self.box_hi,
+                'is_vector': self.is_vector,
+                'shape': self.shape}
 
     @classmethod
     def from_dict(cls, saved_dict):
@@ -71,31 +71,29 @@ class Hyperbox(Domain):
         domain._fixup()
         return domain
 
-
     @classmethod
     def from_twocol(cls, twocol):
-        """ Given a numpy array of shape (m, 2), creates an m-dimensional 
-            hyperbox 
+        """ Given a numpy array of shape (m, 2), creates an m-dimensional
+            hyperbox
         ARGS:
             twocol: np array w/ shape (m, 2)
-        RETURNS: 
+        RETURNS:
             instance of Hyperbox
         """
         dimension = twocol.shape[0]
         center = (twocol[:, 0] + twocol[:, 1]) / 2.0
-        radius =  torch.max(abs(center - twocol[:, 0]), 
-                            abs(center - twocol[:, 1]))
-        hbox_out = Hyperbox.from_dict({'dimension': dimension, 
-                                       'center': center, 
-                                       'radius': radius, 
-                                       'box_low': twocol[:, 0], 
-                                       'box_hi':  twocol[:, 1],
+        radius = torch.max(abs(center - twocol[:, 0]),
+                           abs(center - twocol[:, 1]))
+        hbox_out = Hyperbox.from_dict({'dimension': dimension,
+                                       'center': center,
+                                       'radius': radius,
+                                       'box_low': twocol[:, 0],
+                                       'box_hi': twocol[:, 1],
                                        'is_vector': False})
         hbox_out._fixup()
         return hbox_out
 
-
-    @classmethod 
+    @classmethod
     def from_midpoint_radii(cls, midpoint, radii, shape=None):
         """ Takes in two numpy ndarrays and builds a new Hyperbox object
         ARGS:
@@ -103,27 +101,26 @@ class Hyperbox(Domain):
             radii : np.ndarray describing the coordinate-wise range
                 e.g. H_i in [midpoint_i - radii_i, midpoint_i + radii_i]
         RETURNS:
-            hyperbox object 
+            hyperbox object
         """
         new_hbox = Hyperbox(len(midpoint))
-        new_hbox.box_low = midpoint - radii 
-        new_hbox.box_hi = midpoint + radii 
+        new_hbox.box_low = midpoint - radii
+        new_hbox.box_hi = midpoint + radii
         new_hbox.shape = shape
         new_hbox._fixup()
         return new_hbox
 
     @classmethod
     def from_vector(cls, c):
-        """ Takes in a single numpy array and denotes this as the 
-            hyperbox containing that point 
+        """ Takes in a single numpy array and denotes this as the
+            hyperbox containing that point
         """
         c = utils.tensorfy(c)
-        new_hbox = cls.from_dict({'center': c, 'radius': 0.0, 
+        new_hbox = cls.from_dict({'center': c, 'radius': 0.0,
                                   'box_low': c, 'box_hi': c,
                                   'dimension': len(c), 'is_vector': True})
         new_hbox._fixup()
         return new_hbox
-
 
     # ==============================================================
     # =           Forward facing methods                           =
@@ -134,7 +131,11 @@ class Hyperbox(Domain):
         return cls.build_linf_ball(np.ones(dim) * 0.5, 0.5)
 
     @classmethod
-    def build_linf_ball(cls, x, radius, global_lo=None, global_hi=None):
+    def build_custom_hypercube(cls, dim, center, radius, device="cpu"):
+        return cls.build_linf_ball(x=np.ones(dim) * center, radius=radius, device=device)
+
+    @classmethod
+    def build_linf_ball(cls, x, radius, global_lo=None, global_hi=None, device="cpu"):
         """ Case we mostly care about -- builds an L_infinity ball centered
             at x with specified radius and also intersects with hyperbox
             with specified global lo and hi bounds
@@ -155,22 +156,22 @@ class Hyperbox(Domain):
         domain.center = x_tensor
         domain.radius = radius
         domain.set_2dshape(shape)
+        domain.device = torch.device(device)
         domain._fixup()
         return domain
 
     def get_center(self):
         if self.center is not None:
             return self.center
-        return (self.box_low + self.box_high)/2.0
+        return (self.box_low + self.box_high) / 2.0
 
     def set_2dshape(self, shape):
         self.shape = shape
 
     def as_hyperbox(self):
-        return self 
+        return self
 
-        
-    def random_point(self, num_points=1, tensor_or_np='tensor', 
+    def random_point(self, num_points=1, tensor_or_np='tensor',
                      requires_grad=False):
         """ Returns a uniformly random point in this hyperbox
         ARGS:
@@ -183,7 +184,7 @@ class Hyperbox(Domain):
 
         assert tensor_or_np in ['np', 'tensor']
         diameter = (self.box_hi - self.box_low)
-        rands = torch.rand_like(self.center.expand(num_points, self.dimension))
+        rands = torch.rand_like(self.center.expand(num_points, self.dimension), device=self.device)
         rand_points = rands * diameter + self.box_low
 
         if tensor_or_np == 'tensor':
@@ -194,14 +195,12 @@ class Hyperbox(Domain):
         else:
             return utils.as_numpy(rand_points)
 
-
     def as_twocol(self, tensor_or_np='tensor'):
-        twocol = torch.stack([self.box_low, self.box_hi]).T 
+        twocol = torch.stack([self.box_low, self.box_hi]).T
         if tensor_or_np == 'tensor':
             return twocol
         else:
             return twocol.numpy()
-
 
     def map_layer_forward(self, network, i, abstract_params=None):
         layer = network.net[i]
@@ -224,7 +223,6 @@ class Hyperbox(Domain):
         else:
             raise NotImplementedError("unknown layer type", layer)
 
-
     def map_layer_backward(self, network, i, grad_bound, abstract_params):
         layer = network.net[-(i + 1)]
         forward_idx = len(network.net) - i - 1
@@ -234,7 +232,7 @@ class Hyperbox(Domain):
             return self.map_conv2d_old(network, forward_idx, forward=False)
 
         elif isinstance(layer, nn.ConvTranspose2d):
-            return self.map_conv_transpose_2d_old(network, forward_idx, forward=False)            
+            return self.map_conv_transpose_2d_old(network, forward_idx, forward=False)
         elif isinstance(grad_bound, BooleanHyperbox):
             if isinstance(layer, nn.ReLU):
                 return self.map_switch(grad_bound)
@@ -249,7 +247,6 @@ class Hyperbox(Domain):
         else:
             raise NotImplementedError("unknown layer type", layer)
 
-
     def map_genlin(self, linear_layer, network, layer_num, forward=True):
         if isinstance(linear_layer, nn.Linear):
             return self.map_linear(linear_layer, forward=forward)
@@ -258,12 +255,11 @@ class Hyperbox(Domain):
         else:
             raise NotImplementedError("Unknown linear layer", linear_layer)
 
-
     def map_linear(self, linear, forward=True):
-        """ Takes in a torch.Linear operator and maps this object through 
+        """ Takes in a torch.Linear operator and maps this object through
             the linear map (either forward or backward)
         ARGS:
-            linear : nn.Linear object - 
+            linear : nn.Linear object -
             forward: boolean - if False, we map this 'backward' as if we
                       were doing backprop
         """
@@ -279,15 +275,14 @@ class Hyperbox(Domain):
         else:
             new_midpoint = F.linear(midpoint, linear.weight.T, None)
             new_radii = F.linear(radii, linear.weight.T.abs())
-        return Hyperbox.from_midpoint_radii(new_midpoint, new_radii)# ._dilate()
-
+        return Hyperbox.from_midpoint_radii(new_midpoint, new_radii)  # ._dilate()
 
     def map_conv2d_old(self, network, index, forward=True):
         # Setup phase
         layer = network[index]
-        assert isinstance(layer, nn.Conv2d)         
-        input_shape = network.shapes[index] 
-        output_shape = network.shapes[index + 1] 
+        assert isinstance(layer, nn.Conv2d)
+        input_shape = network.shapes[index]
+        output_shape = network.shapes[index + 1]
         if not forward:
             input_shape, output_shape = output_shape, input_shape
         midpoint = self.center.view((1,) + input_shape)
@@ -295,28 +290,27 @@ class Hyperbox(Domain):
 
         if forward:
             new_midpoint = layer(midpoint).view(-1)
-            new_radii = utils.conv2d_mod(radii, layer, bias=False, 
-                                         abs_kernel=True).view(-1) 
+            new_radii = utils.conv2d_mod(radii, layer, bias=False,
+                                         abs_kernel=True).view(-1)
         else:
             mid_in = torch.zeros((1,) + output_shape, requires_grad=True)
-            mid_out = (layer(mid_in) * midpoint).sum() 
+            mid_out = (layer(mid_in) * midpoint).sum()
             new_midpoint = torch.autograd.grad(mid_out, mid_in)[0].view(-1)
 
-            rad_in = torch.zeros((1,) + output_shape, requires_grad=True)            
+            rad_in = torch.zeros((1,) + output_shape, requires_grad=True)
             rad_out = utils.conv2d_mod(rad_in, layer, abs_kernel=True)
             new_radii = torch.autograd.grad((rad_out * radii).sum(), rad_in)[0].view(-1)
-        hbox_out = Hyperbox.from_midpoint_radii(new_midpoint, new_radii, 
+        hbox_out = Hyperbox.from_midpoint_radii(new_midpoint, new_radii,
                                                 shape=output_shape)
 
         return hbox_out
-
 
     def map_conv2d(self, network, index, forward=True):
         # Setup phase
         layer = network[index]
-        assert isinstance(layer, nn.Conv2d)         
-        input_shape = network.shapes[index] 
-        output_shape = network.shapes[index + 1] 
+        assert isinstance(layer, nn.Conv2d)
+        input_shape = network.shapes[index]
+        output_shape = network.shapes[index + 1]
         if not forward:
             input_shape, output_shape = output_shape, input_shape
         midpoint = self.center.view((1,) + input_shape)
@@ -324,32 +318,31 @@ class Hyperbox(Domain):
 
         if forward:
             new_midpoint = layer(midpoint).view(-1)
-            new_radii = utils.conv2d_mod(radii, layer, bias=False, 
-                                         abs_kernel=True).view(-1) 
+            new_radii = utils.conv2d_mod(radii, layer, bias=False,
+                                         abs_kernel=True).view(-1)
         else:
             print("MIDPOINT", midpoint.shape)
             print("LAYER", layer)
-            new_layer = nn.ConvTranspose2d(layer.out_channels, layer.in_channels, 
-                                           kernel_size=layer.kernel_size, 
+            new_layer = nn.ConvTranspose2d(layer.out_channels, layer.in_channels,
+                                           kernel_size=layer.kernel_size,
                                            stride=layer.stride)
-            new_layer.weight.data = layer.weight.data 
+            new_layer.weight.data = layer.weight.data
             new_layer.bias.data = torch.zeros_like(new_layer.bias.data)
             new_midpoint = new_layer(midpoint).view(-1)
             print("\t NEW MIDPOINT", new_midpoint.shape)
-            new_radii = utils.conv_transpose_2d_mod(radii, new_layer, bias=False, 
-                                                    abs_kernel=True).view(-1) 
+            new_radii = utils.conv_transpose_2d_mod(radii, new_layer, bias=False,
+                                                    abs_kernel=True).view(-1)
 
-        hbox_out = Hyperbox.from_midpoint_radii(new_midpoint, new_radii, 
+        hbox_out = Hyperbox.from_midpoint_radii(new_midpoint, new_radii,
                                                 shape=output_shape)
 
         return hbox_out
 
-
     def map_conv_transpose_2d(self, network, index, forward=True):
-        layer = network[index] 
+        layer = network[index]
         assert isinstance(layer, nn.ConvTranspose2d)
-        input_shape = network.shapes[index] 
-        output_shape = network.shapes[index + 1] 
+        input_shape = network.shapes[index]
+        output_shape = network.shapes[index + 1]
         if not forward:
             input_shape, output_shape = output_shape, input_shape
         midpoint = self.center.view((1,) + input_shape)
@@ -357,26 +350,26 @@ class Hyperbox(Domain):
 
         if forward:
             new_midpoint = layer(midpoint).view(-1)
-            new_radii = utils.conv_transpose_2d_mod(radii, layer, bias=False, 
-                                                    abs_kernel=True).view(-1) 
+            new_radii = utils.conv_transpose_2d_mod(radii, layer, bias=False,
+                                                    abs_kernel=True).view(-1)
         else:
-            new_layer = nn.Conv2d(layer.out_channels, layer.in_channels, 
-                                  kernel_size=layer.kernel_size, 
-                                  stride=layer.stride,)
-            new_layer.weight.data = layer.weight.data 
+            new_layer = nn.Conv2d(layer.out_channels, layer.in_channels,
+                                  kernel_size=layer.kernel_size,
+                                  stride=layer.stride, )
+            new_layer.weight.data = layer.weight.data
             new_layer.bias.data = torch.zeros_like(new_layer.bias.data)
             new_midpoint = new_layer(midpoint).view(-1)
-            new_radii = utils.conv2d_mod(radii, new_layer, bias=False, 
+            new_radii = utils.conv2d_mod(radii, new_layer, bias=False,
                                          abs_kernel=True).view(-1)
 
-        return Hyperbox.from_midpoint_radii(new_midpoint, new_radii, 
+        return Hyperbox.from_midpoint_radii(new_midpoint, new_radii,
                                             shape=output_shape)
 
     def map_conv_transpose_2d_old(self, network, index, forward=True):
-        layer = network[index] 
+        layer = network[index]
         assert isinstance(layer, nn.ConvTranspose2d)
-        input_shape = network.shapes[index] 
-        output_shape = network.shapes[index + 1] 
+        input_shape = network.shapes[index]
+        output_shape = network.shapes[index + 1]
         if not forward:
             input_shape, output_shape = output_shape, input_shape
         midpoint = self.center.view((1,) + input_shape)
@@ -384,34 +377,32 @@ class Hyperbox(Domain):
 
         if forward:
             new_midpoint = layer(midpoint).view(-1)
-            new_radii = utils.conv_transpose_2d_mod(radii, layer, bias=False, 
-                                                    abs_kernel=True).view(-1) 
+            new_radii = utils.conv_transpose_2d_mod(radii, layer, bias=False,
+                                                    abs_kernel=True).view(-1)
         else:
             mid_in = torch.zeros((1,) + output_shape, requires_grad=True)
-            mid_out = (layer(mid_in) * midpoint).sum() 
-            new_midpoint = torch.autograd.grad(mid_out, mid_in)[0].view(-1) 
+            mid_out = (layer(mid_in) * midpoint).sum()
+            new_midpoint = torch.autograd.grad(mid_out, mid_in)[0].view(-1)
             rad_in = torch.zeros((1,) + output_shape, requires_grad=True)
             rad_out = utils.conv_transpose_2d_mod(rad_in, layer, abs_kernel=True)
             new_radii = torch.autograd.grad((rad_out * radii).sum(), rad_in)[0].view(-1)
 
-        return Hyperbox.from_midpoint_radii(new_midpoint, new_radii, 
+        return Hyperbox.from_midpoint_radii(new_midpoint, new_radii,
                                             shape=output_shape)
-
-
 
     def map_avgpool(self, network, index, forward=True):
         # Maps average pool layer, similar strategy to convolutional layers...
         layer = network[index]
         try:
-            assert isinstance(layer, nn.AvgPool2d)         
+            assert isinstance(layer, nn.AvgPool2d)
         except:
             print(index, layer)
             print("Up1", network[index + 1])
-            print("Down1", network[index -1])
+            print("Down1", network[index - 1])
             aoeuoaeu
 
-        input_shape = network.shapes[index] 
-        output_shape = network.shapes[index + 1] 
+        input_shape = network.shapes[index]
+        output_shape = network.shapes[index + 1]
         if not forward:
             input_shape, output_shape = output_shape, input_shape
         midpoint = self.center.view((1,) + input_shape)
@@ -422,25 +413,24 @@ class Hyperbox(Domain):
             new_radii = layer(radii).view(-1)
         else:
             mid_in = torch.zeros((1,) + output_shape, requires_grad=True)
-            mid_out = (layer(mid_in) * midpoint).sum() 
+            mid_out = (layer(mid_in) * midpoint).sum()
             new_midpoint = torch.autograd.grad(mid_out, mid_in)[0].view(-1)
 
-            rad_in = torch.zeros((1,) + output_shape, requires_grad=True)            
-            rad_out = layer(rad_in) 
+            rad_in = torch.zeros((1,) + output_shape, requires_grad=True)
+            rad_out = layer(rad_in)
             new_radii = torch.autograd.grad((rad_out * radii).sum(), rad_in)[0].view(-1)
-        hbox_out = Hyperbox.from_midpoint_radii(new_midpoint, new_radii, 
+        hbox_out = Hyperbox.from_midpoint_radii(new_midpoint, new_radii,
                                                 shape=output_shape)
         return hbox_out
 
-
     def map_nonlin(self, nonlin):
-        if nonlin == F.relu: 
+        if nonlin == F.relu:
             return self.map_relu()
-        else: 
-            return None # 
+        else:
+            return None  #
 
     def map_relu(self, **pf_kwargs):
-        """ Returns the hyperbox attained by mapping this hyperbox through 
+        """ Returns the hyperbox attained by mapping this hyperbox through
             elementwise ReLU operators
         """
         twocol = self.as_twocol(tensor_or_np='tensor')
@@ -448,7 +438,7 @@ class Hyperbox(Domain):
         box_out = Hyperbox.from_twocol(new_bounds)
         box_out._fixup()
         box_out.shape = self.shape
-        return box_out # ._dilate()
+        return box_out  # ._dilate()
 
     def map_monotone(self, layer, **pf_kwargs):
         twocol = self.as_twocol(tensor_or_np='tensor')
@@ -456,7 +446,6 @@ class Hyperbox(Domain):
         box_out._fixup()
         box_out.shape = self.shape
         return box_out
-
 
     def map_nonlin_backwards(self, nonlin_obj, grad_bound):
         if nonlin_obj == F.relu:
@@ -468,36 +457,35 @@ class Hyperbox(Domain):
             raise NotImplementedError("ONLY RELU SUPPORTED")
 
     def map_switch(self, bool_box):
-        return bool_box.map_switch(self)#._dilate()
+        return bool_box.map_switch(self)  # ._dilate()
 
     def map_leaky_switch(self, layer, bool_box):
         return bool_box.map_switch(self, layer.negative_slope)
 
-
     def _get_abs_ranges(self):
-        """ Given a hyperbox, returns a pair of d-length vectors 
-        grad_lows, grad_his with 
-            grad_losw_i := max(|l_i|, |u_i|) 
-            grad_his_i  := min(|x|_i) for x in H 
+        """ Given a hyperbox, returns a pair of d-length vectors
+        grad_lows, grad_his with
+            grad_losw_i := max(|l_i|, |u_i|)
+            grad_his_i  := min(|x|_i) for x in H
         """
         grad_input_lows = torch.max(self.box_low.abs(), self.box_hi.abs())
-        grad_input_his = torch.min(self.box_low.abs(), self.box_hi.abs()) 
-        grad_input_his[self.box_low * self.box_hi < 0] = 0 
+        grad_input_his = torch.min(self.box_low.abs(), self.box_hi.abs())
+        grad_input_his[self.box_low * self.box_hi < 0] = 0
         return grad_input_lows, grad_input_his
 
     def map_elementwise_mult(self, grad_bound):
-        """ Returns a hyperbox that ranges from the elementwise mult of 
+        """ Returns a hyperbox that ranges from the elementwise mult of
             low/hi_mult
         ARGS:
-            low_mult: tensor of length d - lower bounds for elementwise mults 
-            hi_mult : tensor of length d - upper bounds for elementwise mults 
+            low_mult: tensor of length d - lower bounds for elementwise mults
+            hi_mult : tensor of length d - upper bounds for elementwise mults
         """
-        # Just do all four mults: and take max/mins? 
+        # Just do all four mults: and take max/mins?
         low_mult, hi_mult = grad_bound.box_low, grad_bound.box_hi
-        lolo = self.box_low * low_mult 
-        lohi = self.box_low * hi_mult 
-        hilo = self.box_hi * hi_mult 
-        hihi = self.box_hi * hi_mult 
+        lolo = self.box_low * low_mult
+        lohi = self.box_low * hi_mult
+        hilo = self.box_hi * hi_mult
+        hihi = self.box_hi * hi_mult
 
         total_mins = torch.min(torch.min(torch.min(lolo, lohi), hilo), hihi)
         total_maxs = torch.max(torch.max(torch.max(lolo, lohi), hilo), hihi)
@@ -506,26 +494,26 @@ class Hyperbox(Domain):
         outbox.shape = self.shape
         return outbox
 
-    @classmethod 
+    @classmethod
     def relu_grad(cls, box, layer):
-        # Make hyperbox of grads from layer ranges 
+        # Make hyperbox of grads from layer ranges
         box = box.as_hyperbox()
-        box_hi = (box.box_hi > 0).float() 
+        box_hi = (box.box_hi > 0).float()
         if isinstance(layer, nn.LeakyReLU):
-            box_low = (box.box_low > 0).float() +\
+            box_low = (box.box_low > 0).float() + \
                       (box.box_low < 0).float() * layer.negative_slope
         else:
-            box_low = (box.box_low > 0).float() 
+            box_low = (box.box_low > 0).float()
         outbox = Hyperbox.from_twocol(torch.stack([box_low, box_hi]).T)
         outbox.shape = box.shape
-        return outbox        
+        return outbox
 
     @classmethod
     def smooth_grad(cls, box, layer):
         if isinstance(layer, nn.Tanh):
-            ddx = lambda x: 1 / (torch.cosh(x) ** 2)         
+            ddx = lambda x: 1 / (torch.cosh(x) ** 2)
         elif isinstance(layer, nn.Sigmoid):
-            ddx = lambda x: torch.sigmoid(x) * (1 - torch.sigmoid(x))            
+            ddx = lambda x: torch.sigmoid(x) * (1 - torch.sigmoid(x))
         else:
             raise NotImplementedError("Unknown layer", layer)
         box = box.as_hyperbox()
@@ -534,14 +522,13 @@ class Hyperbox(Domain):
         grad_range_lows = ddx(grad_input_lows)
         grad_range_his = ddx(grad_input_his)
 
-        outbox = Hyperbox.from_twocol(torch.stack([grad_range_lows, 
+        outbox = Hyperbox.from_twocol(torch.stack([grad_range_lows,
                                                    grad_range_his]).T)
-        outbox.shape = box.shape        
+        outbox.shape = box.shape
         return outbox
 
-
     def encode_as_gurobi_model(self, squire, key):
-        model = squire.model 
+        model = squire.model
         namer = utils.build_var_namer(key)
         gb_vars = []
         for i, (lb, ub) in enumerate(self):
@@ -551,8 +538,8 @@ class Hyperbox(Domain):
         return gb_vars
 
     def contains(self, point):
-        """ Returns True if the provided point is in the hyperbox 
-        If point is a [N x dim] tensor, it returns the boolean array of 
+        """ Returns True if the provided point is in the hyperbox
+        If point is a [N x dim] tensor, it returns the boolean array of
         this being true for all points
         """
         point = utils.tensorfy(point)
@@ -570,7 +557,7 @@ class Hyperbox(Domain):
 
     def _dilate(self, eps=1e-6):
         print("_DILATE", eps)
-        self.radius += eps 
+        self.radius += eps
         self._fixup
         return self
 
@@ -580,28 +567,26 @@ class Hyperbox(Domain):
             (smallest bounding hyperbox in the case of zonos) """
 
         if isinstance(obj, cls):
-            return obj 
+            return obj
         elif isinstance(obj, (torch.Tensor, np.ndarray)):
             return cls.from_vector(obj)
         else:
             return obj.as_hyperbox()
 
-
     def maximize_norm(self, norm='l1'):
-        """ Maximizes the l1/linf norm of the hyperbox 
+        """ Maximizes the l1/linf norm of the hyperbox
         ARGS:
-            norm : str - either 'l1' or 'linf', decides which norm we maximize 
+            norm : str - either 'l1' or 'linf', decides which norm we maximize
         RETURNS:
-            float - maximum norm of the hyperbox 
+            float - maximum norm of the hyperbox
         """
 
         assert norm in ['l1', 'linf']
         abs_twocol = self.as_twocol().abs()
-        if norm == 'l1': 
+        if norm == 'l1':
             return abs_twocol.max(1)[0].sum().item()
         else:
             return abs_twocol.max().item()
-
 
     # ==========================================================================
     # =           Helper methods                                               =
@@ -609,7 +594,7 @@ class Hyperbox(Domain):
 
     def _fixup(self):
         if self.center is None:
-            self.center = (self.box_low + self.box_hi) / 2.0 
+            self.center = (self.box_low + self.box_hi) / 2.0
             self.radius = self.box_hi - self.center
         else:
             self.box_low = self.center - self.radius
@@ -618,18 +603,18 @@ class Hyperbox(Domain):
         if isinstance(self.radius, numbers.Number):
             self.radius = torch.ones_like(self.center) * self.radius
 
-        self.box_low = self.box_low.data
-        self.box_hi = self.box_hi.data
-        self.center = self.center.data
-        self.radius = self.radius.data
+        self.box_low = self.box_low.data.to(self.device)
+        self.box_hi = self.box_hi.data.to(self.device)
+        self.center = self.center.data.to(self.device)
+        self.radius = self.radius.data.to(self.device)
         self.dimension = self.center.shape[0]
 
     def _add_box_bound(self, val, lo_or_hi='lo'):
         """ Adds lower bound box constraints
         ARGS:
-            val: float or torch.tensor(self.dimension) -- defines the 
+            val: float or torch.tensor(self.dimension) -- defines the
                  coordinatewise bounds
-            lo_or_hi: string ('lo' or 'hi') -- defines if these are lower or 
+            lo_or_hi: string ('lo' or 'hi') -- defines if these are lower or
                       upper bounds
         RETURNS:
             None
@@ -646,19 +631,17 @@ class Hyperbox(Domain):
             setattr(self, attr, comp(getattr(self, attr), val))
         return None
 
-
     def _number_to_arr(self, number_val):
         """ Converts float to array of dimension self.dimension """
         assert isinstance(number_val, numbers.Real)
         return torch.ones_like(self.center) * number_val
 
 
-
-
 class BooleanHyperbox:
-    """ Way to represent a vector of {-1, ?, 1} as a boolean 
+    """ Way to represent a vector of {-1, ?, 1} as a boolean
         hyperbox. e.g., [-1, ?] = {(-1, -1), (-1, +1)}
     """
+
     @classmethod
     def relu_grad(cls, obj, params):
         return obj.as_boolean_hbox(params)
@@ -672,7 +655,6 @@ class BooleanHyperbox:
         values[hbox.box_hi < 0] = -1
         return BooleanHyperbox(values)
 
-
     @classmethod
     def from_zonotope(cls, zonotope):
         """ Takes a zonotope and represents the orthants in resides in """
@@ -681,9 +663,8 @@ class BooleanHyperbox:
         values[zonotope.ubs < 0] = -1
         return BooleanHyperbox(values)
 
-
     def __init__(self, values):
-        """ Values gets stored as its numpy array of type np.int8 
+        """ Values gets stored as its numpy array of type np.int8
             where all values are -1, 0, 1 (0 <=> ? <=> {-1, +1})
         """
         self.values = utils.tensorfy(values).type(torch.int8)
@@ -697,26 +678,25 @@ class BooleanHyperbox:
             yield value
 
     def to_hyperbox(self):
-        low_col = torch.zeros_like(self.values).float() 
-        hi_col = torch.ones_like(self.values).float() 
-        
-        low_col[self.values > 0] = 1
-        hi_col[self.values < 0] = 0 
-        return Hyperbox.from_twocol(torch.stack(low_col, hi_col).T)
+        low_col = torch.zeros_like(self.values).float()
+        hi_col = torch.ones_like(self.values).float()
 
+        low_col[self.values > 0] = 1
+        hi_col[self.values < 0] = 0
+        return Hyperbox.from_twocol(torch.stack(low_col, hi_col).T)
 
     def map_switch(self, hyperbox, leaky_value=0.0):
         """ Maps a hyperbox through elementwise switch operators
-            where the switch values are self.values. 
+            where the switch values are self.values.
         In 1-d switch works like this: given interval I and booleanbox a
         SWITCH(I, a): = (0.,0.)                        if (a == -1)
                         I                            if (a == +1)
                         (min(I[0], 0.), max(I[1], 0.)) if (a == 0)
         [CAVEAT: if leaky_value != 0, replace 0.^ with leaky_value]
         ARGS:
-            hyperbox: hyperbox governing inputs to switch layer 
+            hyperbox: hyperbox governing inputs to switch layer
             leaky_value : negative slope for a leaky ReLU
-        RETURNS: 
+        RETURNS:
             hyperbox with element-wise switch's applied
         """
         eps = 1e-7
@@ -736,10 +716,9 @@ class BooleanHyperbox:
         new_lows[switch_q & (hyperbox.box_low > 0)] *= leaky_value
         new_highs[switch_q & (hyperbox.box_hi < 0)] *= leaky_value
 
-
-        # Dilate just a little bit for safety 
+        # Dilate just a little bit for safety
         new_lows -= eps
-        new_highs += eps 
+        new_highs += eps
         # And combine to make a new hyperbox
         box_out = Hyperbox.from_twocol(torch.stack([new_lows, new_highs]).T)
         box_out.shape = hyperbox.shape
@@ -753,18 +732,12 @@ class BooleanHyperbox:
                              I                                  if (a == +1)
                              (min(I[0], r), max(I[1], r))       if (a == 0)
         ARGS:
-            hyperbox: hyperbox governing inputs to leaky-switch layer 
+            hyperbox: hyperbox governing inputs to leaky-switch layer
         RETURNS:
             hyperbox with element-wise switch's applied
         """
         eps = 1e-8
 
-
     def zero_val(self):
-        # Returns a boolean hbox with all values set to zero 
+        # Returns a boolean hbox with all values set to zero
         return BooleanHyperbox(torch.zeros_like(self.values))
-        
-
-
-
-

@@ -39,7 +39,7 @@ class LipSDP(OtherResult):
 							.dot(final_weight).reshape((1, -1))
 		weight_list[-1] = final_weight
 
-		return {'weights': np.array(weight_list, dtype=np.object)}
+		return {'weights': np.array(weight_list, dtype=object)}
 
 
 	def __init__(self, network, c_vector, primal_norm=None, domain=None):
