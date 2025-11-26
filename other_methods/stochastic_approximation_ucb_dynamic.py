@@ -141,7 +141,7 @@ class Space:
 
 
 class StochasticApproximationUCBDynamic(OtherResult):
-    def __init__(self, network, c_vector, domain, c, partition_step, primal_norm='linf', device='cpu', use_c_vector=False):
+    def __init__(self, network, c_vector, domain, c, partition_step, primal_norm='linf', device='cpu', use_c_vector=False, is_transformer=False):
         super(StochasticApproximationUCBDynamic, self).__init__(network, c_vector, domain, primal_norm)
         self.DEVICE = torch.device(device)
         self.network = self.network.to(self.DEVICE)
@@ -155,6 +155,7 @@ class StochasticApproximationUCBDynamic(OtherResult):
         self.side = self.ub - self.lb
         self.space = Space(self.lb, self.ub, self.c)
         self.use_c_vector = use_c_vector
+        self.is_transformer = is_transformer
 
     def f(self, point):
         if not self.use_c_vector:
@@ -166,8 +167,12 @@ class StochasticApproximationUCBDynamic(OtherResult):
             j_norm = J.norm(p=1)
             return j_norm
         else:
-            j_norm = torch.autograd.functional.jacobian(lambda point: self.network(point).mv(self.c_vector).sum(),
-                                                        point).norm(p=1)
+            if not self.is_transformer:
+                j_norm = torch.autograd.functional.jacobian(lambda point: self.network(point).mv(self.c_vector).sum(),point).norm(p=1)
+            else:
+                # print(point.shape)
+                # print(self.network(point).shape, self.c_vector)
+                j_norm = torch.autograd.functional.jacobian(lambda point: self.network(point).squeeze(0).mv(self.c_vector).sum(),point).norm(p=1)
             return j_norm
 
     def compute(self, max_iter=1000, v=False, exact=None, tol=1e-5, mode="Absolute"):
@@ -183,6 +188,8 @@ class StochasticApproximationUCBDynamic(OtherResult):
 
             reg = self.space.choose_region()
             x = reg.get_random_points(1)
+            if self.is_transformer:
+                x = x.expand(1,1,64)
             fx = self.f(x)
             self.space.add_evaluation(x.cpu().detach().numpy(), fx)
 
