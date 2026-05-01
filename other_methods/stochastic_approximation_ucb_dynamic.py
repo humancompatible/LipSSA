@@ -4,6 +4,8 @@ import utilities as utils
 import torch
 from other_methods import OtherResult
 
+_DUAL_NORM = {'linf': 1, 'l1': float('inf'), 'l2': 2}
+
 
 class RegionNode:
     def __init__(self, lb, ub, maximum=0, mean=0, std=0, n=0):
@@ -141,8 +143,11 @@ class Space:
 
 
 class StochasticApproximationUCBDynamic(OtherResult):
-    def __init__(self, network, c_vector, domain, c, partition_step, primal_norm='linf', device='cpu', use_c_vector=False, is_transformer=False):
+    def __init__(self, network, c_vector, domain, c, partition_step, primal_norm='linf', device='cpu', is_transformer=False):
         super(StochasticApproximationUCBDynamic, self).__init__(network, c_vector, domain, primal_norm)
+        assert utils.arraylike(c_vector)
+        if not isinstance(self.c_vector, torch.Tensor):
+            self.c_vector = torch.tensor(self.c_vector, dtype=torch.float)
         self.DEVICE = torch.device(device)
         self.network = self.network.to(self.DEVICE)
         self.value = torch.tensor([1e-18]).to(device)
@@ -154,26 +159,19 @@ class StochasticApproximationUCBDynamic(OtherResult):
         self.partition_step = partition_step
         self.side = self.ub - self.lb
         self.space = Space(self.lb, self.ub, self.c)
-        self.use_c_vector = use_c_vector
         self.is_transformer = is_transformer
 
     def f(self, point):
-        if not self.use_c_vector:
-            nt_out = self.network(point)
-            grad_vectors = []
-            for i in range(nt_out.shape[1]):
-                grad_vectors.append(torch.autograd.grad(nt_out[0, i], point, retain_graph=True)[0])
-            J = torch.stack(grad_vectors, dim=0)
-            j_norm = J.norm(p=1)
-            return j_norm
+        dual_p = _DUAL_NORM[self.primal_norm]
+        if self.is_transformer:
+            j_norm = torch.autograd.functional.jacobian(
+                lambda point: self.network(point).squeeze(0).mv(self.c_vector).sum(), point
+            ).norm(p=dual_p)
         else:
-            if not self.is_transformer:
-                j_norm = torch.autograd.functional.jacobian(lambda point: self.network(point).mv(self.c_vector).sum(),point).norm(p=1)
-            else:
-                # print(point.shape)
-                # print(self.network(point).shape, self.c_vector)
-                j_norm = torch.autograd.functional.jacobian(lambda point: self.network(point).squeeze(0).mv(self.c_vector).sum(),point).norm(p=1)
-            return j_norm
+            j_norm = torch.autograd.functional.jacobian(
+                lambda point: self.network(point).mv(self.c_vector).sum(), point
+            ).norm(p=dual_p)
+        return j_norm
 
     def compute(self, max_iter=1000, v=False, exact=None, tol=1e-5, mode="Absolute"):
         timer = utils.Timer()

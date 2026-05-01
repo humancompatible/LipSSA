@@ -3,6 +3,8 @@ import utilities as utils
 import torch
 from .other_methods import OtherResult
 
+_DUAL_NORM = {'linf': 1, 'l1': float('inf'), 'l2': 2}
+
 
 class Region:
     def __init__(self, l, r):
@@ -32,8 +34,11 @@ class Region:
 
 
 class StochasticApproximationEqDiv(OtherResult):
-    def __init__(self, network, c_vector, domain, divisions_per_dimension, primal_norm='linf', device='cpu', use_c_vector=False):
+    def __init__(self, network, c_vector, domain, divisions_per_dimension, primal_norm='linf', device='cpu'):
         super(StochasticApproximationEqDiv, self).__init__(network, c_vector, domain, primal_norm)
+        assert utils.arraylike(c_vector)
+        if not isinstance(self.c_vector, torch.Tensor):
+            self.c_vector = torch.tensor(self.c_vector, dtype=torch.float)
         self.value = 1e-18
         self.answer_coords = None
         self.iteration_count = 0
@@ -44,23 +49,14 @@ class StochasticApproximationEqDiv(OtherResult):
         self.side = self.ub - self.lb
         self.DEVICE = torch.device(device)
         self.network = self.network.to(self.DEVICE)
-        self.use_c_vector = use_c_vector
-
         self.eval_list = []
 
     def f(self, point):
-        if not self.use_c_vector:
-            nt_out = self.network(point)
-            grad_vectors = []
-            for i in range(nt_out.shape[1]):
-                grad_vectors.append(torch.autograd.grad(nt_out[0, i], point, retain_graph=True)[0])
-            J = torch.stack(grad_vectors, dim=0)
-            j_norm = J.norm(p=1)
-            return j_norm
-        else:
-            j_norm = torch.autograd.functional.jacobian(lambda point: self.network(point).mv(self.c_vector).sum(),
-                                                        point).norm(p=1)
-            return j_norm
+        dual_p = _DUAL_NORM[self.primal_norm]
+        j_norm = torch.autograd.functional.jacobian(
+            lambda point: self.network(point).mv(self.c_vector).sum(), point
+        ).norm(p=dual_p)
+        return j_norm
 
     def init_regions(self):
         self.regions = []
