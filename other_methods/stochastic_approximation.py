@@ -11,11 +11,12 @@ class StochasticApproximation(OtherResult):
     def __init__(self, network, c_vector, domain, primal_norm='linf', device='cpu'):
         super(StochasticApproximation, self).__init__(network, c_vector, domain, primal_norm)
         assert utils.arraylike(c_vector)
+        self.DEVICE = torch.device(device)
         if not isinstance(self.c_vector, torch.Tensor):
             self.c_vector = torch.tensor(self.c_vector, dtype=torch.float)
-        self.value = torch.tensor([1e-18]).to(device)
+        self.c_vector = self.c_vector.to(self.DEVICE)
+        self.value = torch.tensor([1e-18]).to(self.DEVICE)
         self.iteration_count = 0
-        self.DEVICE = torch.device(device)
         self.network = self.network.to(self.DEVICE)
         self.eval_list = []
 
@@ -29,7 +30,8 @@ class StochasticApproximation(OtherResult):
     def compute(self, max_iter=10000, track_evaluations=False, v=False, exact=None, tol=1e-5, mode="Absolute"):
         timer = utils.Timer()
         self.iteration_count = 0
-        random_pts = self.domain.random_point(num_points=max_iter, requires_grad=True)
+        random_pts = self.domain.random_point(num_points=max_iter, requires_grad=False)
+        random_pts = random_pts.to(self.DEVICE).detach().requires_grad_(True)
 
         for it in range(max_iter):
             point = random_pts[it]
