@@ -10,11 +10,7 @@ import pytest
 import torch
 
 from benchmarks import utils
-from benchmarks.planted import (
-    PLANTED_FLAWED,
-    PLANTED_MIN_GADGET,
-    make_planted_net,
-)
+from benchmarks.planted import make_planted_net
 
 torch.manual_seed(0)
 
@@ -162,51 +158,28 @@ def test_T6_full_network_ground_truth(c, k):
         assert norms.max() < c - GT_ATOL
 
 
-# ----------------------------------------------------------------------- T7
-@pytest.mark.parametrize("k", KS)
-def test_T7_flawed_permutation_defect(k):
-    """Control construction 'flawed_permutation': samples u OFF the orthant but
-    with >=1 positive coordinate still have ||J_{F1}(u)||_2 == 1. This test is
-    EXPECTED TO PASS -- it pins down the intended (degenerate) property of this
-    construction, namely that its reaching region is almost the whole domain."""
-    net, meta = make_planted_net(d=k + 6, k=k, depth1=3, depth2=2, c=1.0, seed=9,
-                                 planted_style=PLANTED_FLAWED, dtype=DTYPE)
-    assert meta.rho == pytest.approx(1 - 2.0 ** (-k))
-    # u with exactly the first coord negative, rest positive -> >=1 positive coord
-    u = torch.rand(64, k, dtype=DTYPE) * 0.9 + 0.05
-    u[:, 0] = -torch.rand(64, dtype=DTYPE) - 0.05
-    J = utils.batched_jacobian(net.planted, u)       # (B, k, k)
-    norms = utils.operator_norm(J, 2)
-    assert (norms - 1.0).abs().max() < GT_ATOL
-
-
 # ----------------------------------------------------------------------- T8
-@pytest.mark.parametrize("style,expected_rho", [
-    (PLANTED_MIN_GADGET, lambda k: 2.0 ** (-k)),
-    (PLANTED_FLAWED, lambda k: 1 - 2.0 ** (-k)),
-])
-def test_T8_empirical_rho(style, expected_rho):
+def test_T8_empirical_rho():
     """Empirical fraction of samples with ||J_F|| >= c-eps matches the claimed
-    measure rho of the reaching region within a binomial confidence interval."""
+    measure rho = 2^-k of the reaching region within a binomial confidence
+    interval."""
     d, k, N = 8, 3, 20000
     net, meta = make_planted_net(d=d, k=k, depth1=3, depth2=3, c=1.0, seed=11,
-                                 planted_style=style, dtype=DTYPE)
+                                 dtype=DTYPE)
     X = torch.rand(N, d, dtype=DTYPE) * 2 - 1
     norms = utils.jacobian_norms(net, X, 2)
     frac = (norms >= 1.0 - 1e-9).double().mean().item()
 
-    p = expected_rho(k)
+    p = 2.0 ** (-k)
     assert meta.rho == pytest.approx(p)
     se = math.sqrt(p * (1 - p) / N)
     assert abs(frac - p) < 4 * se      # ~4-sigma binomial band
 
 
 # ----------------------------------------------------------------------- T9
-@pytest.mark.parametrize("style", [PLANTED_MIN_GADGET, PLANTED_FLAWED])
-def test_T9_determinism(style):
+def test_T9_determinism():
     """Two calls with the same seed produce bitwise-identical state_dicts."""
-    kwargs = dict(d=20, k=5, depth1=4, depth2=3, c=0.7, seed=123,
-                  planted_style=style, dtype=DTYPE)
+    kwargs = dict(d=20, k=5, depth1=4, depth2=3, c=0.7, seed=123, dtype=DTYPE)
     net_a, _ = make_planted_net(**kwargs)
     net_b, _ = make_planted_net(**kwargs)
     sd_a, sd_b = net_a.state_dict(), net_b.state_dict()

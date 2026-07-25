@@ -10,7 +10,7 @@ norms:
   - distractor block F_2: wide/deep, Lipschitz constant < c by construction.
 Hence L_p(F) = max(c, L(F_2)) = c.
 
-For the "min_gadget" planted block the estimate reaches c exactly on the positive
+The planted block is a min-gadget: the estimate reaches c exactly on the positive
 orthant of u, a region of known measure rho = 2^{-k}. Under coordinate-symmetric
 sampling this gives the analytic miss probability Pr[Lhat_n < c] = (1 - rho)^n for
 a running-max estimator over n samples.
@@ -36,20 +36,16 @@ _OFF_SIGMA = 1        # planted permutation stack Sigma
 _OFF_DIST_MATS = 2    # distractor doubly-stochastic matrices
 _OFF_SLOPES = 3       # distractor slopes
 
-PLANTED_MIN_GADGET = "min_gadget"
-PLANTED_FLAWED = "flawed_permutation"
-
 
 @dataclass
 class PlantedMeta:
     """Ground-truth metadata carried alongside the generated network."""
     true_lipschitz: float                 # = c
-    rho: float                            # measure of the reaching region: 2^-k or 1-2^-k
+    rho: float                            # measure of the reaching region: 2^-k
     k: int
     d: int
     c: float
     seed: int
-    planted_style: str
     reaching_region: str                  # human-readable description
     # Raw building blocks, exposed for inspection/testing (they are checked at a
     # different level than the final layer weights):
@@ -213,39 +209,6 @@ class _PlantedMinGadget(nn.Module):
         return h.squeeze(-1)          # scalar output R^k -> R
 
 
-class _PlantedFlawedPermutation(nn.Module):
-    """R^k -> R^k,  a pure-permutation alternative kept as a control construction.
-
-    depth1 layers of (permutation + ReLU) then a final permutation scaled by c,
-    i.e. F_1 = c * P_last @ phi(... phi(P_1 u)). Off the all-negative orthant the
-    Jacobian is a partial permutation (a permutation with some rows deleted),
-    which still has norm 1. So the reaching region here has measure 1 - 2^{-k}
-    -- almost the whole domain -- inverting the difficulty knob relative to the
-    min-gadget. This makes the estimator hit c almost immediately; it is useful
-    precisely as a degenerate baseline to contrast with min_gadget.
-    """
-
-    def __init__(self, k, depth1, c, seed, dtype):
-        super().__init__()
-        self.k = k
-        gen = utils.make_generator(seed, _OFF_SIGMA)
-        layers = nn.ModuleList()
-        for _ in range(depth1):
-            P = utils.random_permutation_matrix(k, gen, dtype)
-            layers.append(utils.fixed_linear(P, dtype))
-            layers.append(nn.ReLU())
-        # final permutation with c folded in, no trailing ReLU
-        P_last = utils.random_permutation_matrix(k, gen, dtype)
-        layers.append(utils.fixed_linear(c * P_last, dtype))
-        self.layers = layers
-
-    def forward(self, u):
-        h = u
-        for layer in self.layers:
-            h = layer(h)
-        return h
-
-
 # =========================================================================
 # Distractor block   R^{d-k} -> R^{d-k}
 # =========================================================================
@@ -318,7 +281,6 @@ class PlantedNet(nn.Module):
 
 
 def make_planted_net(d, k, depth1, depth2, c, seed,
-                     planted_style=PLANTED_MIN_GADGET,
                      slope_dist=DEFAULT_SLOPE_DIST,
                      birkhoff_terms=DEFAULT_BIRKHOFF_TERMS,
                      dtype=DEFAULT_DTYPE):
@@ -335,25 +297,17 @@ def make_planted_net(d, k, depth1, depth2, c, seed,
         raise ValueError(f"slope_dist upper bound must be < 1, got {slope_dist}")
     m = d - k
 
-    if planted_style == PLANTED_MIN_GADGET:
-        planted = _PlantedMinGadget(k, depth1, c, seed, dtype)
-        rho = 2.0 ** (-k)
-        reaching = ("positive orthant u in (0,1]^k (measure 2^-k); "
-                    "argmin cell has ||J_F1||_p = 1")
-    elif planted_style == PLANTED_FLAWED:
-        planted = _PlantedFlawedPermutation(k, depth1, c, seed, dtype)
-        rho = 1.0 - 2.0 ** (-k)      # inverted measure: reaching region is almost everything
-        reaching = ("complement of the all-negative orthant (measure 1-2^-k); "
-                    "partial-permutation Jacobian of norm 1")
-    else:
-        raise ValueError(f"unknown planted_style {planted_style!r}")
+    planted = _PlantedMinGadget(k, depth1, c, seed, dtype)
+    rho = 2.0 ** (-k)
+    reaching = ("positive orthant u in (0,1]^k (measure 2^-k); "
+                "argmin cell has ||J_F1||_p = 1")
 
     distractor = _Distractor(m, depth2, c, seed, slope_dist, birkhoff_terms, dtype)
     net = PlantedNet(planted, distractor, k, d)
 
     meta = PlantedMeta(
         true_lipschitz=float(c), rho=float(rho), k=k, d=d, c=float(c), seed=seed,
-        planted_style=planted_style, reaching_region=reaching,
+        reaching_region=reaching,
         A_raw=[A.clone() for A in distractor.A_raw],
         slopes=[s.clone() for s in distractor.slopes],
         c_absorbed_layer="last linear of each block (planted head + distractor layer L)",

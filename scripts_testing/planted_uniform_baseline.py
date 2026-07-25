@@ -26,11 +26,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from benchmarks import utils                                        # noqa: E402
-from benchmarks.planted import (                                    # noqa: E402
-    PLANTED_FLAWED,
-    PLANTED_MIN_GADGET,
-    make_planted_net,
-)
+from benchmarks.planted import make_planted_net                     # noqa: E402
 
 # --- Experiment configuration (named constants) ---------------------------
 DTYPE = torch.float64
@@ -75,11 +71,11 @@ def running_max_norms(net, d, k, n, sampler_seed):
     return out.numpy()
 
 
-def collect_curves(k, c, style=PLANTED_MIN_GADGET, slope_dist=(0.2, 0.95), repeats=N_REPEATS_PROB):
+def collect_curves(k, c, slope_dist=(0.2, 0.95), repeats=N_REPEATS_PROB):
     """Return (n_axis, Lhat matrix [repeats x n]) for the given instance."""
     n = N_MULT * (2 ** k)
     net, meta = make_planted_net(d=D, k=k, depth1=DEPTH1, depth2=DEPTH2, c=c,
-                                 seed=GEN_SEED, planted_style=style,
+                                 seed=GEN_SEED,
                                  slope_dist=slope_dist, dtype=DTYPE)
     mat = np.empty((repeats, n))
     for r in range(repeats):
@@ -129,20 +125,6 @@ def plot_graph2(results, metas, path):
     plt.legend(fontsize=7); plt.tight_layout(); plt.savefig(path, dpi=130); plt.close()
 
 
-def plot_graph3(min_res, flawed_res, path):
-    """min_gadget vs flawed_permutation miss-probability on (k=5, c=1.0)."""
-    plt.figure(figsize=(8, 5))
-    for label, (n_axis, mat, rho) in [("min_gadget", min_res), ("flawed_permutation", flawed_res)]:
-        emp = np.mean(mat < 1.0 - HIT_EPS, axis=0)
-        plt.plot(n_axis, emp, label=f"{label} (emp)")
-        plt.plot(n_axis, (1 - rho) ** n_axis, ls="--", lw=1.0,
-                 label=f"{label} analytic, rho={rho:.4f}")
-    plt.xscale("log")
-    plt.xlabel("n (samples)"); plt.ylabel(r"$\Pr[\hat{L}_n < c]$")
-    plt.title("Measure inversion: min-gadget vs flawed permutation (k=5, c=1.0)")
-    plt.legend(fontsize=8); plt.tight_layout(); plt.savefig(path, dpi=130); plt.close()
-
-
 def distractor_plateau(k, c, slope_dist):
     """Empirical distractor plateau: median Lhat_n / c over samples taken BEFORE
     the planted orthant is hit (i.e. the level the estimate crawls at while it has
@@ -168,13 +150,6 @@ def main():
 
     plot_graph1(results, os.path.join(OUT_DIR, "graph1_normalised_estimate.png"))
     plot_graph2(results, metas, os.path.join(OUT_DIR, "graph2_miss_probability.png"))
-
-    # --- Graph 3: min_gadget vs flawed_permutation on (k=5, c=1.0) ---
-    print("[compare] min_gadget vs flawed_permutation (k=5, c=1.0) ...", flush=True)
-    n_axis_m, mat_m, meta_m = collect_curves(5, 1.0, style=PLANTED_MIN_GADGET)
-    n_axis_f, mat_f, meta_f = collect_curves(5, 1.0, style=PLANTED_FLAWED)
-    plot_graph3((n_axis_m, mat_m, meta_m.rho), (n_axis_f, mat_f, meta_f.rho),
-                os.path.join(OUT_DIR, "graph3_measure_inversion.png"))
 
     # --- Knob-2 calibration: distractor plateaus per slope_dist ---
     plateaus = {}
@@ -218,12 +193,6 @@ def _write_report(results, metas, plateaus, elapsed):
         lines.append(f"| {sd} | {level:.3f} |")
     lines.append("\nThese plateau levels quantify the gap Delta = c - plateau, "
                  "which controls how hard localising the maximum is.\n")
-
-    lines.append("## flawed_permutation (measure inversion)\n")
-    lines.append("Expected degenerate behaviour: Pr[Lhat_n < c] ~ 2^-k already at "
-                 "n=1 (the reaching region is almost the whole domain). See "
-                 "graph3_measure_inversion.png -- this is the intended behaviour of "
-                 "the control construction, not a bug.\n")
 
     lines.append("## Open design questions\n")
     lines.append("- (a) Confirm the min-gadget as the primary planted construction.")
