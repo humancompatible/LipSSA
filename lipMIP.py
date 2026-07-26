@@ -796,7 +796,7 @@ def set_linf_objective(squire, box_range, abs_key, maxint_key):
     ubs = np.maximum(box_range.box_hi, abs(box_range.box_low))
     lbs = np.maximum(box_range.box_low, 0)
     l_max = max(lbs)
-    relevant_idxs = [_ for _ in range(len(ubs)) if _ >= l_max]
+    relevant_idxs = [i for i in range(len(ubs)) if ubs[i] >= l_max]
 
     top_two = sorted(relevant_idxs, key=lambda el: -ubs[el])[:2]
     max_var = model.addVar(lb=l_max, ub=ubs[top_two[0]])
