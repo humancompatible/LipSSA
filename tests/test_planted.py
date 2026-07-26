@@ -96,30 +96,32 @@ def test_T2_doubly_stochastic_and_layer_norms(c, depth2):
 
 
 # ----------------------------------------------------------------------- T3
+@pytest.mark.parametrize("c", [0.5, 1.0])
 @pytest.mark.parametrize("k", KS)
 @pytest.mark.parametrize("depth1", DEPTH1S)
-def test_T3_planted_orthant_jacobian_is_argmin(k, depth1):
-    """min_gadget on the positive orthant: Jacobian of F_1 (c=1) equals
-    e_{argmin(u)}^T exactly, and its norm is 1 in every p."""
-    net, _ = make_planted_net(d=k + 6, k=k, depth1=depth1, depth2=2, c=1.0, seed=5, dtype=DTYPE)
+def test_T3_planted_orthant_jacobian_is_argmin(k, depth1, c):
+    """min_gadget on the positive orthant: Jacobian of F_1 equals
+    c * e_{argmin(u)}^T exactly, and its norm is c in every p."""
+    net, _ = make_planted_net(d=k + 6, k=k, depth1=depth1, depth2=2, c=c, seed=5, dtype=DTYPE)
     u = _orthant_u(64, k)
     J = utils.batched_jacobian(net.planted, u)   # (B, k)
     argmin = u.argmin(dim=-1)
-    expected = torch.nn.functional.one_hot(argmin, k).to(DTYPE)
+    expected = c * torch.nn.functional.one_hot(argmin, k).to(DTYPE)
     assert (J - expected).abs().max() < GT_ATOL   # pointwise argmin routing
     for p in PS:
         norms = utils.operator_norm(J.unsqueeze(1), p)   # treat as 1 x k
-        assert (norms - 1.0).abs().max() < GT_ATOL
+        assert (norms - c).abs().max() < GT_ATOL
 
 
 # ----------------------------------------------------------------------- T4
+@pytest.mark.parametrize("c", [0.5, 1.0])
 @pytest.mark.parametrize("k", KS)
 @pytest.mark.parametrize("depth1", DEPTH1S)
-def test_T4_planted_off_orthant_jacobian_zero(k, depth1):
+def test_T4_planted_off_orthant_jacobian_zero(k, depth1, c):
     """min_gadget off the positive orthant (>=1 negative coord): F_1 is locally
     constant, so its Jacobian is identically 0 (independent of the ReLU'(0)
     convention)."""
-    net, _ = make_planted_net(d=k + 6, k=k, depth1=depth1, depth2=2, c=1.0, seed=6, dtype=DTYPE)
+    net, _ = make_planted_net(d=k + 6, k=k, depth1=depth1, depth2=2, c=c, seed=6, dtype=DTYPE)
     u = torch.rand(64, k, dtype=DTYPE)
     u[:, 0] = -torch.rand(64, dtype=DTYPE) - 0.05   # force a strictly negative coord
     J = utils.batched_jacobian(net.planted, u)
@@ -128,13 +130,17 @@ def test_T4_planted_off_orthant_jacobian_zero(k, depth1):
 
 # ----------------------------------------------------------------------- T5
 @pytest.mark.parametrize("k", KS)
-def test_T5_min_tree_equals_amin(k):
-    """The min-tree core (before final ReLU) equals torch.amin, including inputs
-    with negative coordinates."""
-    net, _ = make_planted_net(d=k + 6, k=k, depth1=0, depth2=2, c=1.0, seed=7, dtype=DTYPE)
+@pytest.mark.parametrize("depth1", DEPTH1S)
+def test_T5_min_tree_equals_clamped_amin(k, depth1):
+    """The min-tree core equals ReLU(torch.amin), including on inputs with
+    negative coordinates. The tree is fed through the sigma stack, which clamps
+    negatives, and ReLU commutes with the minimum -- so the core computes the
+    clamped minimum, not the signed one."""
+    net, _ = make_planted_net(d=k + 6, k=k, depth1=depth1, depth2=2, c=1.0, seed=7,
+                              dtype=DTYPE)
     u = torch.rand(200, k, dtype=DTYPE) * 2 - 1
     got = net.planted.min_tree_core(u)
-    assert (got - torch.amin(u, dim=-1)).abs().max() < AMIN_ATOL
+    assert (got - torch.relu(torch.amin(u, dim=-1))).abs().max() < AMIN_ATOL
 
 
 # ----------------------------------------------------------------------- T6
@@ -174,6 +180,29 @@ def test_T8_empirical_rho():
     assert meta.rho == pytest.approx(p)
     se = math.sqrt(p * (1 - p) / N)
     assert abs(frac - p) < 4 * se      # ~4-sigma binomial band
+
+
+EQ_KS = [2, 3, 4, 5, 7, 8]             # includes non-powers of two (odd tails)
+EQ_N = 10_000
+EQ_ATOL = 1e-12                         # exact in float64; the tree is {0,+-1} weights
+
+
+# ---------------------------------------------------------------------- T10
+@pytest.mark.parametrize("depth1", [0, 3])
+@pytest.mark.parametrize("k", EQ_KS)
+def test_T10_gadget_equals_scaled_clamped_min(k, depth1):
+    """The whole planted block computes c * ReLU(min_j u_j) pointwise, on inputs
+    drawn from all orthants. This is the contract the single-channel min tree
+    has to preserve; it holds for every k, including odd k where a level carries
+    a tail value, and for depth1 = 0 where the sigma stack is a single
+    (identity + ReLU)."""
+    for c in (0.5, 1.0):
+        net, _ = make_planted_net(d=k + 4, k=k, depth1=depth1, depth2=2, c=c,
+                                  seed=17, dtype=DTYPE)
+        u = torch.rand(EQ_N, k, dtype=DTYPE) * 2 - 1
+        got = net.planted(u)
+        expected = c * torch.relu(torch.amin(u, dim=-1))
+        assert (got - expected).abs().max() < EQ_ATOL
 
 
 # ----------------------------------------------------------------------- T9

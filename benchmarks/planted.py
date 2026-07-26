@@ -3,7 +3,7 @@
 Builds F(x) = (F_1(u), F_2(v)) with x = (u, v), u = x[:k], v = x[k:], whose local
 Lipschitz constant L_p(F) = c is known by construction for every p in {1, 2, inf}.
 
-Two parallel blocks read DISJOINT slices of the input (nothing mixes u and v), so
+Two parallel blocks read disjoint slices of the input (nothing mixes u and v), so
 the Jacobian is block-diagonal and its induced p-norm is the max of the two block
 norms:
   - planted block F_1: narrow, exact Lipschitz constant c;
@@ -14,11 +14,27 @@ The planted block is a min-gadget: the estimate reaches c exactly on the positiv
 orthant of u, a region of known measure rho = 2^{-k}. Under coordinate-symmetric
 sampling this gives the analytic miss probability Pr[Lhat_n < c] = (1 - rho)^n for
 a running-max estimator over n samples.
+
+Min-tree encoding
+-----------------
+ReLU is monotone non-decreasing, hence it commutes with the minimum:
+
+    phi(min_j u_j) = min_j phi(u_j),      phi = ReLU.
+
+So a single ReLU applied to the raw input is enough to make every value inside the
+tree non-negative, and the tree can then carry one channel per value. There is no
+need for the two-channel signed encoding value = phi(value) - phi(-value): no
+negative intermediate value exists to encode. The only quantity inside the tree
+that genuinely changes sign is the pairwise difference a - b, and it passes
+through its own ReLU(a - b) -- an honestly ambiguous neuron that must stay.
+
+Permutations do not change a multiset, so the sigma stack in front of the tree
+leaves min_j unchanged; combined with the identity above, the block computes
+c * ReLU(min_j u_j) regardless of depth1.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 import torch
@@ -58,124 +74,108 @@ class PlantedMeta:
 # Planted block: min-gadget   R^k -> R
 # =========================================================================
 def _build_min_tree_trunk(k: int, dtype: torch.dtype):
-    """Layers mapping raw u in R^k to a final two-channel pair (P, M) encoding
-    min_j u_j = P - M, with P, M >= 0.
+    """Layers reducing k *non-negative* channels to the single value min_j u_j.
 
-    This computes the minimum with a genuine ReLU network (no torch.min), so it
-    stays a plain feed-forward ReLU net with explicit weight matrices. It uses:
-      - min(a, b) = a - ReLU(a - b), applied over a binary tree of depth
-        ceil(log2 k);
-      - a two-channel encoding value = ReLU(value) - ReLU(-value) to carry
-        possibly-negative intermediate values through ReLU layers.
+    Computes the minimum with a genuine ReLU network (no torch.min), so the block
+    stays a plain feed-forward net with explicit weight matrices. It uses
+    min(a, b) = a - ReLU(a - b) over a binary tree of ceil(log2 k) levels. Because
+    the caller guarantees non-negative inputs (see the module docstring), one
+    channel per value suffices -- no signed two-channel encoding.
+
+    Each level needs one ReLU layer:
+      - layer A (before the ReLU) emits, per pair (a, b), the rows [a - b] and
+        [a]; ReLU turns them into d = ReLU(a - b) and a itself (a >= 0). An odd
+        tail value is carried by a single row [a].
+      - layer B (after the ReLU) forms min(a, b) = a - d with one row per value.
+        min(a, b) >= 0, so no ReLU is needed after it; instead of emitting layer B
+        as its own linear map it is left *pending* and composed into the next
+        level's layer A (or into the head), which keeps the block strictly
+        alternating Linear -> ReLU and removes a layer of pass-through neurons.
+
     All weights are in {0, +-1} and non-trainable.
 
-    Returns (nn.ModuleList of alternating (Linear, ReLU) layers, final width).
+    Returns (nn.ModuleList of alternating (Linear, ReLU) layers, pending), where
+    `pending` is the (1 x width) matrix the caller must fold into its head.
     """
     layers = nn.ModuleList()
+    n = k
+    pending = torch.eye(k, dtype=dtype)     # maps last ReLU output -> live values
 
-    # --- Split layer: u_j -> (ReLU(u_j), ReLU(-u_j)) = (p_j, m_j). ---
-    W_split = torch.zeros(2 * k, k, dtype=dtype)
-    for j in range(k):
-        W_split[2 * j, j] = 1.0        # p_j
-        W_split[2 * j + 1, j] = -1.0   # m_j
-    layers.append(utils.fixed_linear(W_split, dtype))
-    layers.append(nn.ReLU())
-
-    # live[i] = (p_idx, m_idx): channel indices of value i (value = p - m).
-    live = [(2 * i, 2 * i + 1) for i in range(k)]
-    width = 2 * k
-
-    # --- Binary min tree, ceil(log2 k) levels, two Linear+ReLU layers each. ---
-    while len(live) > 1:
-        # Layer A: for each combined pair (a, b) emit [ReLU(a-b), pa, ma];
-        #          for a carried tail value emit its pair unchanged.
+    while n > 1:
+        # --- Layer A: per pair emit [a - b] and [a]; odd tail emits [a]. ---
         rowsA = []
-        a_layout = []   # semantics of layer-A outputs, in order
-        for i in range(0, len(live), 2):
-            if i + 1 < len(live):
-                (pa, ma), (pb, mb) = live[i], live[i + 1]
-                # d = a - b = (pa - ma) - (pb - mb)
-                r = torch.zeros(width, dtype=dtype)
-                r[pa], r[ma], r[pb], r[mb] = 1.0, -1.0, -1.0, 1.0
-                rowsA.append(r)                       # ReLU(d)
-                rp = torch.zeros(width, dtype=dtype); rp[pa] = 1.0
-                rowsA.append(rp)                      # pass pa (>=0) through ReLU
-                rm = torch.zeros(width, dtype=dtype); rm[ma] = 1.0
-                rowsA.append(rm)                      # pass ma (>=0) through ReLU
-                a_layout.append(("combine", len(rowsA) - 3))  # index of ReLU(d)
+        layout = []          # semantics of layer-A outputs, in order
+        for i in range(0, n, 2):
+            if i + 1 < n:
+                r = torch.zeros(n, dtype=dtype)
+                r[i], r[i + 1] = 1.0, -1.0
+                rowsA.append(r)                        # -> d = ReLU(a - b)
+                ra = torch.zeros(n, dtype=dtype); ra[i] = 1.0
+                rowsA.append(ra)                       # -> a  (a >= 0, ReLU is id)
+                layout.append(("combine", len(rowsA) - 2))   # index of d; a at +1
             else:
-                (p, m) = live[i]
-                rp = torch.zeros(width, dtype=dtype); rp[p] = 1.0
-                rowsA.append(rp)
-                rm = torch.zeros(width, dtype=dtype); rm[m] = 1.0
-                rowsA.append(rm)
-                a_layout.append(("carry", len(rowsA) - 2))
+                ra = torch.zeros(n, dtype=dtype); ra[i] = 1.0
+                rowsA.append(ra)                       # -> carried tail value
+                layout.append(("carry", len(rowsA) - 1))
         WA = torch.stack(rowsA, dim=0)
-        layers.append(utils.fixed_linear(WA, dtype))
+        layers.append(utils.fixed_linear(WA @ pending, dtype))
         layers.append(nn.ReLU())
         width_a = WA.shape[0]
 
-        # Layer B: for each combined triple [ReLU(d), pa, ma] form the new pair
-        #          (ReLU(minval), ReLU(-minval)), minval = pa - ma - ReLU(d);
-        #          carried pairs pass through.
+        # --- Layer B: min(a, b) = a - d, one row per surviving value. ---
         rowsB = []
-        new_live = []
-        for kind, base in a_layout:
+        for kind, base in layout:
+            r = torch.zeros(width_a, dtype=dtype)
             if kind == "combine":
-                rd, pa, ma = base, base + 1, base + 2
-                rP = torch.zeros(width_a, dtype=dtype)
-                rP[pa], rP[ma], rP[rd] = 1.0, -1.0, -1.0     # minval
-                rowsB.append(rP)
-                rM = torch.zeros(width_a, dtype=dtype)
-                rM[pa], rM[ma], rM[rd] = -1.0, 1.0, 1.0      # -minval
-                rowsB.append(rM)
-            else:  # carry
-                p, m = base, base + 1
-                rp = torch.zeros(width_a, dtype=dtype); rp[p] = 1.0
-                rowsB.append(rp)
-                rm = torch.zeros(width_a, dtype=dtype); rm[m] = 1.0
-                rowsB.append(rm)
-            new_live.append((len(rowsB) - 2, len(rowsB) - 1))
-        WB = torch.stack(rowsB, dim=0)
-        layers.append(utils.fixed_linear(WB, dtype))
-        layers.append(nn.ReLU())
-        width = WB.shape[0]
-        live = new_live
+                d_idx, a_idx = base, base + 1
+                r[a_idx], r[d_idx] = 1.0, -1.0         # min(a, b) = a - ReLU(a-b)
+            else:
+                r[base] = 1.0
+            rowsB.append(r)
+        pending = torch.stack(rowsB, dim=0)
+        n = pending.shape[0]
 
-    return layers, width  # width == 2 (final pair), or 2 for k==1 too
+    return layers, pending      # pending: (1 x width) once n == 1
 
 
 class _MinTreeCore(nn.Module):
-    """R^k -> R returning the *signed* min_j u_j (no final ReLU, no c scaling).
+    """R^k -> R returning the tree's minimum, without the c scaling.
 
-    Exposed for inspection/testing on inputs that include negative coordinates.
-    Shares the trunk layers with the planted branch.
+    Shares the trunk layers with the planted branch and reproduces everything the
+    branch does except multiplying by c, so it evaluates ReLU(min_j u_j): the
+    sigma stack in front of the tree already clamps negative coordinates, and
+    ReLU commutes with the minimum. Exposed for inspection and testing.
     """
 
-    def __init__(self, trunk: nn.ModuleList, final_width: int, dtype: torch.dtype):
+    def __init__(self, sigma: nn.ModuleList, trunk: nn.ModuleList,
+                 pending: torch.Tensor, dtype: torch.dtype):
         super().__init__()
+        self.sigma = sigma
         self.trunk = trunk
-        # head: (P, M) -> P - M = min
-        W = torch.tensor([[1.0, -1.0]], dtype=dtype)
-        assert final_width == 2
-        self.head = utils.fixed_linear(W, dtype)
+        self.head = utils.fixed_linear(pending, dtype)   # (1 x width), c omitted
 
     def forward(self, u):
         h = u
+        for layer in self.sigma:
+            h = layer(h)
         for layer in self.trunk:
             h = layer(h)
         return self.head(h).squeeze(-1)
 
 
 class _PlantedMinGadget(nn.Module):
-    """R^k -> R,  F_1(u) = c * ReLU(min_j (Sigma(u))_j).
+    """R^k -> R,  F_1(u) = c * ReLU(min_j u_j).
 
-    Sigma is a stack of depth1 (permutation + ReLU) layers that add depth without
-    changing the norm; on the positive orthant it acts as the identity up to a
-    coordinate permutation. It feeds the min tree, then a final Linear([c, -c])
-    followed by ReLU, which equals c * ReLU(min) since c > 0 => ReLU(c t) =
-    c ReLU(t). Folding c into the last linear keeps the whole block a plain ReLU
-    net (rather than an extra scalar multiply on the output).
+    Sigma is a stack of (permutation + ReLU) layers that add depth without
+    changing the norm; a permutation leaves the minimum alone, so the block's
+    value does not depend on depth1. Sigma also establishes the invariant the min
+    tree relies on -- its output is non-negative -- which is why depth1 == 0 still
+    gets one (identity + ReLU) layer rather than no layer at all.
+
+    The tree is followed by a Linear with c folded in and a final ReLU. ReLU(c t)
+    = c ReLU(t) for c > 0, so this equals c * ReLU(min); folding c into the last
+    linear keeps the whole block a plain ReLU net rather than an extra scalar
+    multiply on the output.
     """
 
     def __init__(self, k, depth1, c, seed, dtype):
@@ -183,21 +183,25 @@ class _PlantedMinGadget(nn.Module):
         self.k = k
         gen = utils.make_generator(seed, _OFF_SIGMA)
         sigma = nn.ModuleList()
-        for _ in range(depth1):
-            P = utils.random_permutation_matrix(k, gen, dtype)
-            sigma.append(utils.fixed_linear(P, dtype))
+        if depth1 > 0:
+            for _ in range(depth1):
+                P = utils.random_permutation_matrix(k, gen, dtype)
+                sigma.append(utils.fixed_linear(P, dtype))
+                sigma.append(nn.ReLU())
+        else:
+            # The tree requires non-negative inputs; keep one ReLU regardless.
+            sigma.append(utils.fixed_linear(torch.eye(k, dtype=dtype), dtype))
             sigma.append(nn.ReLU())
         self.sigma = sigma
 
-        trunk, final_width = _build_min_tree_trunk(k, dtype)
+        trunk, pending = _build_min_tree_trunk(k, dtype)
         self.trunk = trunk
-        # final head with c absorbed: (P, M) -> c*(P - M), then ReLU.
-        Wc = torch.tensor([[c, -c]], dtype=dtype)
-        self.head = utils.fixed_linear(Wc, dtype)
+        # head with c absorbed, composed with the tree's pending last level.
+        self.head = utils.fixed_linear(c * pending, dtype)
         self.head_relu = nn.ReLU()
 
-        # standalone signed-min view sharing the same trunk (for T5)
-        self.min_tree_core = _MinTreeCore(trunk, final_width, dtype)
+        # standalone min view sharing the same layers (c omitted)
+        self.min_tree_core = _MinTreeCore(sigma, trunk, pending, dtype)
 
     def forward(self, u):
         h = u
