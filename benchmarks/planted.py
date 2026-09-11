@@ -292,6 +292,17 @@ def make_planted_net(d, k, depth1, depth2, c, seed,
 
     Returns (net, meta) with meta.true_lipschitz == c. See the module docstring
     for the construction and the guarantees on L_p(F).
+
+    args:
+        d: total input dimension
+        k: size of the planted block (the special part)
+        depth1: depth of the planted block before the min tree
+        depth2: depth of the distractor block
+        c: true Lipschitz constant (by construction)
+        seed: network-generation seed
+        slope_dist: (low, high) for distractor slopes a_l ~ U(low, high), high < 1
+        birkhoff_terms: K permutations per doubly-stochastic matrix
+        dtype: torch dtype for all weights
     """
     if not (0 < c <= 1):
         raise ValueError(f"c must satisfy 0 < c <= 1, got {c}")
