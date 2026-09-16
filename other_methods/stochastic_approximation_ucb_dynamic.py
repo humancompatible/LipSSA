@@ -1,5 +1,7 @@
-import numpy as np
 import math
+import time
+
+import numpy as np
 import utilities as utils
 import torch
 from other_methods import OtherResult
@@ -19,12 +21,9 @@ class RegionNode:
         self.device = device
         self._lb_t = torch.as_tensor(self.lb, dtype=torch.float, device=self.device)
         self._ub_t = torch.as_tensor(self.ub, dtype=torch.float, device=self.device)
-        self.precomputed_random = self._lb_t + torch.rand(
-            10005, len(self.lb), device=self.device
-        ) * (self._ub_t - self._lb_t)
-        self.random_idx = 0
         self.left = None
         self.right = None
+        self.mid = None  # [[lb', ub'] rows of get_middle] once this node is split
 
     def is_leaf(self):
         return self.left is None and self.right is None
@@ -44,33 +43,51 @@ class RegionNode:
             self.std = math.sqrt(self.std)
 
     def get_random_points(self, n):
-        p = self.precomputed_random[self.random_idx]
-        self.random_idx += 1
-        if self.random_idx == 10000:
-            self.random_idx = 0
-            self.precomputed_random = self._lb_t + torch.rand(
-                10005, len(self.lb), device=self.device
-            ) * (self._ub_t - self._lb_t)
-        return p.clone().detach().requires_grad_()
+        """ `n` points uniform in the box, drawn on demand: shape [d] for n == 1,
+        [n, d] otherwise. Returned as a leaf tensor with requires_grad set, ready
+        for the Jacobian call.
+        """
+        return self.get_random_points_batch(n).squeeze(0).requires_grad_()
 
     def get_random_points_batch(self, n):
         return self._lb_t + torch.rand(
             n, len(self.lb), device=self.device
         ) * (self._ub_t - self._lb_t)
 
-    def get_middle(self):
-        d = (self.ub - self.lb).argmax()
+    def get_middle(self, axis=None):
+        """ The box halved along `axis` (default: its longest side), as the
+        [lb, ub] pair with that coordinate replaced by the midpoint.
+        """
+        d = (self.ub - self.lb).argmax() if axis is None else axis
         mid = np.array([self.lb, self.ub])
         m = (mid[0, d] + mid[1, d]) / 2
         mid[:, d] = m
         return mid
 
 
+SPLIT_RULES = ('longest', 'max_var_axis', 'random')
+
+
 class Space:
-    def __init__(self, lb, ub, c, device=torch.device('cpu')):
+    def __init__(self, lb, ub, c, device=torch.device('cpu'), n0=10, split_rule='longest'):
+        """ Binary tree of axis-aligned boxes over [lb, ub] with the UCB logic.
+
+        ARGS:
+            c: exploration coefficient in the UCB score
+            n0: a leaf with at most n0 evaluations scores +inf, so every new
+                leaf gets sampled n0 times before its statistics are trusted
+            split_rule: which axis a box is halved along when it is split --
+                'longest' (its longest side), 'max_var_axis' (the axis whose
+                midpoint split explains the most variance of the values seen
+                in the box; falls back to 'longest' with fewer than two values
+                on a side), or 'random' (an axis chosen uniformly)
+        """
+        assert split_rule in SPLIT_RULES, f"split_rule must be one of {SPLIT_RULES}"
         self.lb = lb
         self.ub = ub
         self.c = c
+        self.n0 = n0
+        self.split_rule = split_rule
         self.device = device
         self.capacity = 100
         self.eval_num = 0
@@ -82,8 +99,7 @@ class Space:
         v.add_evaluation(fx)
         if v.is_leaf():
             return
-        mid = v.get_middle()[1]
-        if (x <= mid).all():
+        if (x <= v.mid[1]).all():
             self.push_evaluation(v.left, x, fx)
         else:
             self.push_evaluation(v.right, x, fx)
@@ -99,7 +115,7 @@ class Space:
         self.eval_num += 1
 
     def compute_ucb(self, v):
-        if v.n <= 10:
+        if v.n <= self.n0:
             return np.inf
         bonus = math.sqrt(np.log(self.eval_num + 1) / v.n)
         return v.maximum + self.c * bonus * v.std
@@ -111,12 +127,34 @@ class Space:
 
         return leaves[idx]
 
+    def split_axis(self, node, X, fx):
+        """ Axis to halve `node` along, per `self.split_rule`; `X`, `fx` are the
+        evaluations that fall inside the node.
+        """
+        if self.split_rule == 'random':
+            return np.random.randint(self.dimension)
+        if self.split_rule == 'max_var_axis' and X.shape[0] >= 4:
+            centre = (node.lb + node.ub) / 2
+            left = X <= centre                            # [n, d] membership per axis
+            n_l = left.sum(axis=0)
+            n_r = X.shape[0] - n_l
+            ok = (n_l >= 2) & (n_r >= 2)
+            if ok.any():
+                s_l = (left * fx[:, None]).sum(axis=0)
+                m_l = np.where(ok, s_l / np.maximum(n_l, 1), 0.0)
+                m_r = np.where(ok, (fx.sum() - s_l) / np.maximum(n_r, 1), 0.0)
+                between = np.where(ok, n_l * n_r * (m_l - m_r) ** 2, -np.inf)
+                return int(between.argmax())
+        return int((node.ub - node.lb).argmax())
+
     def increment(self):
         node = self.choose_region()
-        mid = node.get_middle()
 
         X = self.evaluations[:, :self.dimension]
         fx = self.evaluations[:, -1]
+        inside = ((X >= node.lb) & (X <= node.ub)).all(axis=1)
+        mid = node.get_middle(self.split_axis(node, X[inside], fx[inside]))
+        node.mid = mid
 
         mask = ((X >= node.lb) & (X <= mid[1])).all(axis=1)
         evals = fx[mask]
@@ -129,7 +167,7 @@ class Space:
             n_minimum = np.min(evals)
             n_mean = np.mean(evals)
             n_std = np.std(evals)
-        node.left = RegionNode(lb=node.lb, ub=node.get_middle()[1], maximum=n_maximum, minimum=n_minimum, mean=n_mean, std=n_std, n=evals.shape[0], device=self.device)
+        node.left = RegionNode(lb=node.lb, ub=mid[1], maximum=n_maximum, minimum=n_minimum, mean=n_mean, std=n_std, n=evals.shape[0], device=self.device)
 
         mask = ((X >= mid[0]) & (X <= node.ub)).all(axis=1)
         evals = fx[mask]
@@ -142,7 +180,7 @@ class Space:
             n_minimum = np.min(evals)
             n_mean = np.mean(evals)
             n_std = np.std(evals)
-        node.right = RegionNode(lb=node.get_middle()[0], ub=node.ub, maximum=n_maximum, minimum=n_minimum, mean=n_mean, std=n_std, n=evals.shape[0], device=self.device)
+        node.right = RegionNode(lb=mid[0], ub=node.ub, maximum=n_maximum, minimum=n_minimum, mean=n_mean, std=n_std, n=evals.shape[0], device=self.device)
 
     def get_leaves(self, v=None) -> list:
         if v is None:
@@ -153,7 +191,16 @@ class Space:
 
 
 class StochasticApproximationUCBDynamic(OtherResult):
-    def __init__(self, network, c_vector, domain, c, partition_step, primal_norm='linf', device='cpu', is_transformer=False):
+    def __init__(self, network, c_vector, domain, c, partition_step, primal_norm='linf', device='cpu',
+                 is_transformer=False, n0=10, split_rule='longest'):
+        """ UCB bandit over an adaptive binary partition of `domain`.
+
+        ARGS:
+            c: exploration coefficient (higher = more exploration)
+            partition_step: the tree is split at iterations partition_step,
+                partition_step**2, partition_step**3, ...
+            n0, split_rule: see Space
+        """
         super(StochasticApproximationUCBDynamic, self).__init__(network, c_vector, domain, primal_norm)
         assert utils.arraylike(c_vector)
         self.DEVICE = torch.device(device)
@@ -169,7 +216,7 @@ class StochasticApproximationUCBDynamic(OtherResult):
         self.c = c
         self.partition_step = partition_step
         self.side = self.ub - self.lb
-        self.space = Space(self.lb, self.ub, self.c, device=self.DEVICE)
+        self.space = Space(self.lb, self.ub, self.c, device=self.DEVICE, n0=n0, split_rule=split_rule)
         self.is_transformer = is_transformer
 
     def f(self, point):
@@ -185,8 +232,16 @@ class StochasticApproximationUCBDynamic(OtherResult):
         return j_norm
 
     def compute(self, max_iter=1000, v=False, exact=None, tol=1e-5, mode="Absolute"):
+        """ UCB search for max_iter iterations (one point per iteration).
+
+        `self.history` records every improvement of the running maximum as
+        [iteration, seconds since start, value]; the best-so-far curve is a step
+        function, so this is its exact and compact description.
+        """
         timer = utils.Timer()
+        t0 = time.perf_counter()
         self.iteration_count = 0
+        self.history = []
         next_partition = self.partition_step
         step_mul = self.partition_step
 
@@ -203,11 +258,12 @@ class StochasticApproximationUCBDynamic(OtherResult):
             fx_scalar = float(fx.detach().cpu().item())
             x_np = x.detach().cpu().numpy().reshape(-1)[:self.space.dimension]
             self.space.add_evaluation(x_np, fx_scalar)
+            self.iteration_count += 1
 
             if self.value < fx:
                 self.value = torch.maximum(self.value, fx)
                 self.answer_coords = x.detach().cpu().numpy()
-            self.iteration_count += 1
+                self.history.append([self.iteration_count, time.perf_counter() - t0, fx_scalar])
 
             if v:
                 print(f"Current approximate: {self.value:.4f}")

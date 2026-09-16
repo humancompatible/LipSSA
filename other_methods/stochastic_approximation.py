@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import utilities as utils
 import torch
@@ -28,24 +30,26 @@ class StochasticApproximation(OtherResult):
         return j_norm
 
     def compute(self, max_iter=10000, track_evaluations=False, v=False, exact=None, tol=1e-5, mode="Absolute"):
+        """ Running maximum of f over max_iter uniform points of the domain.
+
+        `self.history` records every improvement of the running maximum as
+        [iteration, seconds since start, value]; the best-so-far curve is a step
+        function, so this is its exact and compact description.
+        """
         timer = utils.Timer()
+        t0 = time.perf_counter()
         self.iteration_count = 0
+        self.history = []
         random_pts = self.domain.random_point(num_points=max_iter, requires_grad=False)
         random_pts = random_pts.to(self.DEVICE).detach().requires_grad_(True)
 
         for it in range(max_iter):
             point = random_pts[it]
-            # nt_out = self.network(point)
-            # gr = torch.autograd.grad(inputs=point, outputs=nt_out)[0].detach().norm(p=1)
-            # self.value = torch.maximum(self.value, gr)
-            # if track_evaluations:
-            #     self.eval_list.append(gr.detach().cpu().numpy())
-            # self.iteration_count += 1
-
             fx = self.f(point)
+            self.iteration_count += 1
             if self.value < fx:
                 self.value = torch.maximum(self.value, fx)
-            self.iteration_count += 1
+                self.history.append([self.iteration_count, time.perf_counter() - t0, float(fx)])
 
             if v:
                 print(f"Current approximate: {self.value:.4f}")
