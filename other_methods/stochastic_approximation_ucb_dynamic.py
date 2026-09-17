@@ -123,9 +123,8 @@ class Space:
     def choose_region(self) -> RegionNode:
         leaves = self.get_leaves()
         ucb_vals = np.array([self.compute_ucb(leaf) for leaf in leaves])
-        idx = np.argmax(ucb_vals)
-
-        return leaves[idx]
+        best = np.flatnonzero(ucb_vals == ucb_vals.max())
+        return leaves[best[np.random.randint(len(best))]]
 
     def split_axis(self, node, X, fx):
         """ Axis to halve `node` along, per `self.split_rule`; `X`, `fx` are the
