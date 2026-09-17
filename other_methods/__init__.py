@@ -1,7 +1,10 @@
 from .clever import CLEVER
 from .fast_lip import FastLip, FastLip2
 from .lip_lp import LipLP
-from .lip_sdp import LipSDP
+try:
+    from .lip_sdp import LipSDP
+except ImportError:          # LipSDP drives MATLAB; the sampling methods do not need it
+    LipSDP = None
 from .naive_methods import NaiveUB, RandomLB
 from .seq_lip import SeqLip
 from .other_methods import OtherResult
