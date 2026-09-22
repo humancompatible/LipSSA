@@ -196,8 +196,9 @@ class StochasticApproximationUCBDynamic(OtherResult):
 
         ARGS:
             c: exploration coefficient (higher = more exploration)
-            partition_step: the tree is split at iterations partition_step,
-                partition_step**2, partition_step**3, ...
+            partition_step: the tree is split at the first iteration >= each of
+                partition_step, partition_step**2, partition_step**3, ...
+                (a non-integer step such as 1.5 gives a denser schedule)
             n0, split_rule: see Space
         """
         super(StochasticApproximationUCBDynamic, self).__init__(network, c_vector, domain, primal_norm)
@@ -245,7 +246,7 @@ class StochasticApproximationUCBDynamic(OtherResult):
         step_mul = self.partition_step
 
         for it in range(max_iter):
-            if it == next_partition:
+            if it >= next_partition:
                 self.space.increment()
                 next_partition = next_partition * step_mul
 
