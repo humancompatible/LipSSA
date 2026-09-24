@@ -77,7 +77,7 @@ class Space:
             n0: a leaf with at most n0 evaluations scores +inf, so every new
                 leaf gets sampled n0 times before its statistics are trusted
             split_rule: which axis a box is halved along when it is split --
-                'longest' (its longest side), 'max_var_axis' (the axis whose
+                'longest' (its longest side, ties broken uniformly), 'max_var_axis' (the axis whose
                 midpoint split explains the most variance of the values seen
                 in the box; falls back to 'longest' with fewer than two values
                 on a side), or 'random' (an axis chosen uniformly)
@@ -144,7 +144,9 @@ class Space:
                 m_r = np.where(ok, (fx.sum() - s_l) / np.maximum(n_r, 1), 0.0)
                 between = np.where(ok, n_l * n_r * (m_l - m_r) ** 2, -np.inf)
                 return int(between.argmax())
-        return int((node.ub - node.lb).argmax())
+        side = node.ub - node.lb
+        longest = np.flatnonzero(side == side.max())
+        return int(longest[np.random.randint(len(longest))])
 
     def increment(self):
         node = self.choose_region()
