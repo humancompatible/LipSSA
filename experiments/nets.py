@@ -1,7 +1,7 @@
 """Network factories shared by the experiments.
 
-Each factory returns (network, domain, c_vector) plus, for planted nets, the
-generator's metadata; the triple is exactly what the solvers and LipMIP take.
+Each factory returns (network, domain, c_vector), exactly what the solvers and
+LipMIP take.
 Training is seeded so a (spec, seed) pair always yields the same network.
 """
 
@@ -13,8 +13,6 @@ import numpy as np
 import torch
 from torch import nn
 
-from benchmarks.planted import make_planted_net
-from diagnostics.lipmip_harness import planted_net_to_relunet
 from hyperbox import Hyperbox
 from relu_nets import ReLUNet
 import neural_nets.data_loaders as data_loaders
@@ -85,20 +83,3 @@ class RowOutput(nn.Module):
     def forward(self, x):
         out = self.net(x)
         return out.unsqueeze(0) if out.dim() == 1 else out
-
-
-def planted(d, k, depth1, depth2, c, seed, flat=False, dtype=torch.float32):
-    """Planted network with known constant `c`, on the symmetric box [-1, 1]^d.
-
-    The box must be symmetric: the reaching region is the positive orthant of the
-    planted inputs, whose measure rho = 2^-k is what the analytic miss curve
-    assumes. c_vector is all ones. With `flat=True` the two branches are folded
-    into one block-diagonal ReLUNet (the form LipMIP needs); otherwise the
-    generator's own module is returned, which is cheaper per evaluation.
-    Returns (network, domain, c_vector, meta).
-    """
-    net, meta = make_planted_net(d=d, k=k, depth1=depth1, depth2=depth2, c=c, seed=seed, dtype=dtype)
-    domain = Hyperbox.build_linf_ball(np.zeros(d), 1.0)
-    c_vector = torch.ones(1 + (d - k), dtype=dtype)
-    network = planted_net_to_relunet(net) if flat else RowOutput(net)
-    return network, domain, c_vector, meta
